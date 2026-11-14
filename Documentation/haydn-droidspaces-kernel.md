@@ -1,96 +1,85 @@
-# haydn / AGNi v7.10：Droidspaces 最小必需配置与 KABI 适配
+# haydn / AGNi v7.10：Droidspaces FULL / HyperOS-NoKSU / PELT 候选
 
-## 范围与入口
+## 范围与版本边界
 
-- 目标源码基线：`7dc006fa2217dab1b30ce0a615980f6c5013667f`（任务指定的 AGNi v7.10，配置文件标注 Linux 5.4.297）。
-- 配置入口：`arch/arm64/configs/agni_haydn_defconfig`，即 arm64 的 `agni_haydn_defconfig` Kbuild 目标。CI 必须使用这个入口并检查最终生成的 `.config`，不能只检查 defconfig 文本。
-- 目标是给 haydn / HyperOS stockvendor 提供一个可供 GitHub 构建试验的最小改动，不是将下游内核改造成 Google GKI，也不是已验证可安装的发布版本。
-- 不进行本地编译、模块加载或刷机。源码与用户原厂 5.4.274 内核不同；本改动不能证明与原厂 Android 14 vendor 的整体兼容性。
+- 本次修改基线：`547a4f9de02f22921ba84674d8dc50ce62bd0582`；最初 AGNi v7.10 源码基线为 `7dc006fa2217dab1b30ce0a615980f6c5013667f`。入口仍为 `arch/arm64/configs/agni_haydn_defconfig`。
+- 旧最小配置包已有用户实机测试记录，保留其 ZIP，不覆盖，不将旧测试结果外推到本候选。旧云构建 run `43543599924` 的真实 `.config` / `Module.symvers` 用于后续对照；旧 Image 的 IKCONFIG 曾来自 stock_defconfig，不能代表旧真实配置。
+- 用户最终选择全部四项，接受按真实依赖关闭 WALT。候选统一标为 `EXPERIMENTAL-Droidspaces-FULL-HyperOS-NoKSU-PELT-<commit12>`；FULL 表示本次目标功能配置，不表示检测全绿、性能无损或已验证 vendor ABI。
+- 只实现必需配置、真实已有 ABI 槽适配及构建证据。不修改 CPU 频率/电压/温控表或 Android 用户空间，不写宿主 CPU/pids 配额，不启用 RT_GROUP_SCHED，不本地编译、不连接手机、不刷机、不覆盖旧 ZIP。
 
-## 实际改动
+## 配置与真实接线
 
-`arch/arm64/configs/agni_haydn_defconfig`：
+新增配置：
 
 ```text
-CONFIG_PID_NS=y
-CONFIG_POSIX_MQUEUE=y
-CONFIG_POSIX_MQUEUE_SYSCTL=y
-CONFIG_DEVTMPFS=y
-CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+CONFIG_FAIR_GROUP_SCHED=y
+CONFIG_CFS_BANDWIDTH=y
+CONFIG_CGROUP_PIDS=y
+CONFIG_USER_NS=y
+CONFIG_IP6_NF_NAT=y
+CONFIG_IP6_NF_TARGET_MASQUERADE=y
+# CONFIG_SCHED_WALT is not set
 ```
 
-`init/Kconfig` 已提供所需实现和依赖，无需修改：
+`init/Kconfig` 的 `CFS_BANDWIDTH` 真实依赖是 `FAIR_GROUP_SCHED && !SCHED_WALT`。保持该依赖，不假装本树存在可直接启用的 WALT+CFS 完整实现。RT_GROUP_SCHED 仍关闭。
 
-- `PID_NS` 位于 `if NAMESPACES` 内；`NAMESPACES` 依赖 `MULTIUSER`。二者原本均为 `y`，`PID_NS` 不依赖 `USER_NS`。
-- `POSIX_MQUEUE` 依赖 `NET`，原本已为 `y`。
-- `POSIX_MQUEUE_SYSCTL` 是隐藏的 bool，在 `POSIX_MQUEUE && SYSCTL` 下默认 `y`；`SYSCTL` 原本已为 `y`。此处显式记录其自然生成的配套设置，不另加功能。
-- `SYSVIPC=y`、`SYSVIPC_SYSCTL=y`、`IPC_NS=y` 原样保留，不套 SYSVIPC 补丁。
-- 按 Droidspaces v7.2.0 的 GKI 5.4+ 最小清单补开 `DEVTMPFS` 与 `NETFILTER_XT_MATCH_ADDRTYPE`，分别提供设备文件系统与 addrtype 匹配支持。
-- 不启用 `USER_NS`、`CGROUP_PIDS`、`FAIR_GROUP_SCHED` / `CFS_BANDWIDTH` 等可选功能，也不增加替代隔离机制。
+原最小版必需/推荐配置、`COMPAT=y`、`COMPAT_VDSO=y` 与 `MODVERSIONS=y` 均保留，包括 PID_NS、POSIX_MQUEUE / POSIX_MQUEUE_SYSCTL、DEVTMPFS、NETFILTER_XT_MATCH_ADDRTYPE、SYSVIPC、IPC/UTS/NET namespace、seccomp 及现有网络/文件系统支持。CI 检查 olddefconfig 后真实生效值，不仅查看 defconfig 文本。NoKSU/KPM/SUSFS 继续由 CI 显式禁用并断言；固定 KernelSU gitlink 仅为已有 Kconfig source 依赖，不删除 wiring。
 
-`include/linux/sched/user.h`：将受 `CONFIG_POSIX_MQUEUE` 控制的 `mq_bytes` 从结构中部移动到已有的 `ANDROID_KABI_RESERVE(1)` 槽，用 `ANDROID_KABI_USE(1, unsigned long mq_bytes)` 表达；关闭 MQUEUE 时仍保留槽 1，槽 2 不变。
+- CPU quota 与 pids 使用本树现有 CFS bandwidth / cgroup pids 实现；编入控制器不等于给 Android 宿主设置限额。是否挂载/委派及容器配额由正常运行策略决定，不能为了开控制器顺手改宿主策略。
+- USER_NS 使用 `kernel/user_namespace.c` 及 `kernel/Makefile` 的既有接线，由 stub 切到原生创建、UID/GID 映射与能力隔离。`cred.user_ns`、`user_namespace` 的相关字段和 `nsproxy` 成员本来就存在，无需 padding。创建/映射仍受内核权限、sysctl 和 SELinux 约束；增加原生隔离能力也增加攻击面。
+- `net/ipv6/netfilter/Kconfig` 的 IP6_NF_NAT 依赖 conntrack 并选择通用 NF_NAT / NETFILTER_XT_NAT；IP6_NF_TARGET_MASQUERADE 是选择通用 MASQUERADE target 的兼容选项。已有 IPV6、IP6_NF_IPTABLES、NF_CONNTRACK、NF_NAT、NF_NAT_MASQUERADE、NETFILTER_XT_NAT、NETFILTER_XT_TARGET_MASQUERADE 保持 `y`；不添加本树不存在的 NF_NAT_IPV6 / NF_CONNTRACK_IPV6。
 
-## 官方补丁来源与下游适配
+## 调度、boost 与性能边界
 
-唯一外部补丁参考为 Droidspaces-OSS **v7.2.0** 官方目录：
+`kernel/sched/Makefile` 只有在 CONFIG_SCHED_WALT 下才进入 `walt/`。关闭后，其 Makefile 中的 walt、boost、sched_avg、qc_vas、core_ctl、trace 以及该目录 CPU_FREQ 下的 cpu-boost 均不编入，调度使用本树已有非 WALT / PELT 路径。保留 task_struct 的真实 wts 存储并不会恢复这些运行逻辑。
+
+这不是仅多几个容器开关：任务利用率估计、频率反馈、瞬时 boost、核心控制及负载平衡路径会变化。游戏帧时间、突发响应、温度、电耗可能受影响，**不能承诺性能无损或与旧已测包等效**。不通过额外频率/温控/电压补丁掩盖差异；相同环境下比较旧包与候选才有意义。
+
+## ABI 适配与明确未解决的部分
+
+### sched_entity：只消费四个真实既有槽
+
+删除结构中部原 FAIR_GROUP_SCHED 条件字段，将 depth、parent、cfs_rq、my_q 分别放进原本的 ANDROID_KABI_RESERVE(1..4)，启用时使用 ANDROID_KABI_USE，关闭时仍为原 reserve。avg 和其他既有成员不因这四字段被前移/后移。
+
+arm64 上 depth 是 4 字节 int，槽是 8 字节 u64，union 保持 8 字节尺寸/对齐，depth 后余下 4 字节是未使用 padding，不作为额外字段或状态。其他三项为 8 字节指针；宏自带尺寸/对齐静态断言。匿名 union 的首个有效成员是对应字段；静态 init_task 的未显式字段零初始化，组实体走既有 kzalloc 与 init_tg_cfs_entry() 对四字段的赋值，任务的 set_task_rq()/既有调度初始化仍按字段名操作。不读取 depth 槽的 padding，不添加联合体整槽别名初始化。
+
+这是真实占用既有空间的局部布局处理，不是新增假 reserve，也不是伪造 CRC。不能由此推导整个内核 ABI 稳定；编译断言与实际布局转储仍需后续云构建核实。
+
+### task_struct：保留真实已有 WALT 存储，不恢复执行
+
+`include/linux/sched.h` 将本树已有 walt_task_struct 类型及 task_struct.wts 存储保留在非 WALT 配置中；不新建 sidecar/映射机制，不把任意字节数冒充真实类型。该类型仍使用本树原字段/数组和 NR_CPUS/RTMM 条件。WALT API 的声明/stub 和所有调度运行路径继续受 CONFIG_SCHED_WALT 控制。关闭 WALT 后 init_task 原 WALT 专用初始化不执行，保留区为静态零值；fork 的既有复制不赋予它 WALT 运行意义。这仅避免 wts 删除导致的外露字段位移，绝非完整 task_struct/vendor ABI 保证。
+
+### MQUEUE：首版适配原样保留
+
+`include/linux/sched/user.h` 的 mq_bytes 继续用原有 `ANDROID_KABI_USE(1, unsigned long mq_bytes)`，关闭时仍为 reserve 1，reserve 2 不变。首版把它从中部移到真实尾部 u64 槽，避免移动 locked_shm 等成员；arm64 unsigned long 尺寸/对齐匹配，alloc_uid() 和静态 root_user 的零初始化满足初值。此处不再改动。
+
+来源：Droidspaces-OSS **v7.2.0** 官方目录及字段迁移参考：
 
 <https://github.com/ravindu644/Droidspaces-OSS/tree/v7.2.0/Documentation/resources/kernel-patches/GKI/below-kernel-6.12>
 
-采用其中的字段迁移思路：
-
 <https://github.com/ravindu644/Droidspaces-OSS/blob/v7.2.0/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch>
 
-原补丁：`a0aa446ca326b5d26ac1dec057efd8c07d2bcbff`，作者及原 Signed-off-by 为 **lateautumn233 <lateautumn233@foxmail.com>**，日期 2024-01-27，主题为 `[GKI PATCH 3/4] GKI 5.10 or lower: use Android ABI padding for POSIX_MQUEUE user_struct fields`。这里记录原来源归属，不把原作者的签署冒充为本次提交签署。
+原补丁 `a0aa446ca326b5d26ac1dec057efd8c07d2bcbff`，作者及原 Signed-off-by：lateautumn233 <lateautumn233@foxmail.com>，日期 2024-01-27。记录归属不冒充签署。本树无其 OEM_DATA_ARRAY 上下文，所以首版仅消费实际存在的槽，并非整包套用 GKI 补丁。
 
-没有整包套用 GKI 补丁。实际核对发现，本树 `user_struct` 已包含 `android_kabi.h`、预留槽 1/2，但没有官方补丁上下文中的 `ANDROID_OEM_DATA_ARRAY(1, 2)`。因此只删除旧 `mq_bytes` 声明并条件复用现有槽 1，不新增 OEM/vendor 数据，不复制已注释的废弃声明，也不重复槽 2。
+### 无槽的控制器/调度结构与模块语义
 
-## ABI 判断：哪些问题被处理，哪些没有
+CGROUP_PIDS 使 CGROUP_SUBSYS_COUNT 增长，css_set / cgroup 的数组随之扩张；没有可用 reserve，不硬塞、不用宏伪装。FAIR_GROUP_SCHED/CFS_BANDWIDTH 和关闭 WALT 还会改变 task_group、cfs_rq、rq 等配置相关结构。**旧 vendor 模块 ABI 未承诺保持**，需要真实旧/新产物及模块导入项对照，必要时匹配配置重编译模块。
 
-### POSIX MQUEUE：可复用现有 padding，但仅是局部 ABI 论证
+USER_NS 的字段原本存在不等于模块语义完全相同：旧预编译模块可能内联 no-op get/put_user_ns，不能由字段/CRC 相同证明它安全处理非初始 namespace。首版 PID_NS 的真实引用计数、销毁及 put_pid_ns 导出同样与旧 stub 不同。ipc_namespace 的 mqueue 字段和 pid/nsproxy 相关成员原本存在，不能消除上述行为边界。
 
-本树 `include/linux/sched/user.h` 的原布局在 `epoll_watches` 后、`locked_shm` 前条件插入 `unsigned long mq_bytes`。直接开启 MQUEUE 会使 `locked_shm`、`unix_inflight`、`pipe_bufs`、`uidhash_node`、`uid`、`locked_vm`、`ratelimit` 等后续成员移动，并改变结构大小和涉及此类型的符号版本描述。
+MODVERSIONS=y 保持，模块加载器不改，不加入强制加载或版本检查绕过。本次也不顺手改变基线已有的 MODULE_FORCE_LOAD、MODULE_FAKE_LOAD_SUCCESS_WITHOUT_LOADING、MODULE_TURNOFF_FORCED_LOAD_TAINT、MODULE_TURNOFF_SIG_CHECKS 策略。尤其 `kernel/module.c:load_module()` 的既有 fake-success 路径直接返回 0 而不加载模块：insmod 成功、无 taint 或无模块错误日志都不是 ABI 验证。AnyKernel do.modules=0 保持，不自动替换 vendor 模块。
 
-本次使用原本位于尾部的 64-bit 槽 1。arm64 上 `unsigned long` 为 64-bit，尺寸/对齐可容纳在既有 `u64` 槽内。`include/linux/android_kabi.h` 的 `_ANDROID_KABI_REPLACE`：
+## 真实构建证据
 
-- 正常编译时生成覆盖原槽的 union，并以 `_Static_assert` 检查尺寸及对齐；不增加结构尾部空间，不移动已有成员。
-- `__GENKSYMS__` 下展开为原预留字段，使 genksyms 看到的 `user_struct` 声明与原 MQUEUE 关闭配置保持一致。这不是关闭 CRC 检查。
+`kernel/Makefile` 改为从真实 `$(KCONFIG_CONFIG)` 嵌入 IKCONFIG，不修改 stock_defconfig 涂绿。CI 用本树 scripts/extract-ikconfig 从新 Image 提取 embedded.config，与最终真实 .config 逐字节 cmp；提取失败、为空或不一致都禁止生成/保留安装 ZIP。
 
-槽 1 在本树此结构中尚未被其他字段消费。`kernel/user.c` 的 `alloc_uid()` 使用 `kmem_cache_zalloc()`；静态 `root_user` 未显式初始化的槽也为零。`ipc/mqueue.c` 继续通过 `u->mq_bytes` 计费，并在 `mq_lock` 下更新，无需改动 IPC 算法。
+保存真实 .config、嵌入配置、Module.symvers 和既有来源/工具链日志。仅当已有 DEBUG_INFO、vmlinux 和 pahole 可用时导出 sched_entity/task_struct/css_set/cgroup/task_group/cfs_rq/rq 及 user namespace 相关布局；不扩大运行配置、不上传整个 vmlinux。失败/跳过原因另记，不伪称 ABI 检查通过，也不掩盖实际编译错误。后续审核比较真实旧/新 Module.symvers 的导出/CRC，并结合 vermagic、模块导入项和布局；不拿旧伪 IKCONFIG 或 fake-load 返回值作证。
 
-这支持“相对于同树、其余配置不变的 MQUEUE 关闭基线，保留这些已有成员的布局及该类型的 genksyms 表示”的源代码判断。尚未进行实际布局转储、CRC 比较，也不保证厂商模块没有私自使用该预留槽；它不是与原厂内核全量 ABI 相同的证明。
+## 后续验收（实现时均未执行）
 
-### task_struct 与 ipc_namespace：不需要额外补丁
-
-- `include/linux/sched.h` 的 `task_struct` 中，`sysvsem` / `sysvshm` 受 `SYSVIPC` 控制，而 `SYSVIPC` 本来已开。此结构没有因本次 `PID_NS` / `POSIX_MQUEUE` 开关而新增的条件成员。保留其 Android vendor 数据和 KABI 槽，不挪动它们。
-- `include/linux/ipc_namespace.h` 中 `mq_mnt`、`mq_queues_count`、`mq_queues_max`、`mq_msg_max`、`mq_msgsize_max`、`mq_msg_default`、`mq_msgsize_default` 在原树就无条件存在；IPC 和 SysV 字段也已存在。该结构本身没有可用 Android KABI 槽，但本次并不需要增加字段，所以不新增 padding 或伪造其 ABI。
-- `ipc/namespace.c` 已调用 `mq_init_ns()`；打开 MQUEUE 后由原有 stub 切换到 `ipc/mqueue.c` 实现。`ipc/Makefile` 已有 MQUEUE 和 sysctl 构建规则。
-
-### PID_NS：布局没有对应新增字段，但模块语义仍有边界
-
-已核对 `include/linux/pid_namespace.h`、`include/linux/pid.h`、`include/linux/nsproxy.h` 和 `include/linux/user_namespace.h`：`pid_namespace`、`pid`、`nsproxy` 的相关成员及 `UCOUNT_PID_NAMESPACES` 均不是随 `PID_NS` 才插入。因此没有需要借槽掩盖的 PID_NS 布局增长。
-
-`kernel/Makefile` 在启用时构建既有 `pid_namespace.o`；`kernel/pid.c` 为初始 PID namespace 设置 `pidns_operations`。`get_pid_ns()` 从 no-op 变成对非初始 namespace 增引用；`put_pid_ns()` 从 inline no-op 变成外部实现，并新增其 `EXPORT_SYMBOL_GPL`。`copy_pid_ns()`、销毁/重启路径及 proc namespace 行为也从 stub 切换到真正实现。
-
-旧的 PID_NS 关闭配置所编译的预构建模块，可能把 no-op 引用管理逻辑内联在二进制里。即使类型布局/CRC 不变，也不能证明它安全处理新建的非初始 PID namespace。反过来，用 PID_NS 开启配置编译的新模块也不能假定旧内核提供 `put_pid_ns` 导出。应核对实际 vendor 模块是否操作这些 namespace，必要时使用匹配的新配置重编译模块；不添加双轨 namespace 或 CRC 伪装机制。
-
-## 必须显式保留的验证边界
-
-本改动保持 `CONFIG_MODVERSIONS=y`，未修改模块加载器，也未采用 force-load 作为 ABI 解决办法。
-
-**但基线本身已经配置了以下非标准模块策略，本次没有顺手改变：**
-
-```text
-CONFIG_MODULE_FORCE_LOAD=y
-CONFIG_MODULE_FAKE_LOAD_SUCCESS_WITHOUT_LOADING=y
-CONFIG_MODULE_TURNOFF_FORCED_LOAD_TAINT=y
-CONFIG_MODULE_TURNOFF_SIG_CHECKS=y
-```
-
-尤其 `kernel/module.c:load_module()` 在 `CONFIG_MODULE_FAKE_LOAD_SUCCESS_WITHOUT_LOADING` 下直接返回 0，早于签名和符号版本检查，根本不加载模块。因此本配置下仅有 `insmod` 返回成功、没有 taint 或没有模块错误日志，都不能用作模块兼容证据。不能依赖这些原有开关绕过真实 ABI 问题。改变该基线加载策略属于需单独审核的兼容性变更，不与这次 PID/IPC 最小适配混合；当前交付没有宣称 stockvendor 模块已验证可用。
-
-GitHub 实际构建/后续审核至少应分别确认：
-
-1. 最终 `.config` 中上述新增选项有效，`SYSVIPC`、`IPC_NS`、`NAMESPACES`、`NET`、`SYSCTL`、`MODVERSIONS` 仍为 `y`；可选的 USER_NS/CGROUP_PIDS 等没有被间接打开。
-2. 编译、链接通过且 KABI 尺寸/对齐断言通过。保存构建日志、最终配置和 `Module.symvers`，不要仅凭 ZIP 生成判断 ABI。
-3. 如能取得同树未改配置的构建产物及实际 stockvendor 模块，比较受影响结构布局、导出符号 CRC、vermagic、模块导入项；单个 `user_struct` 的兼容处理不能替代全量比较。
-4. 运行时的 PID/IPC namespace 创建、mqueue 挂载及收发、SELinux/权限策略、Android 启动和硬件功能均未验证。CI 编译成功仍不代表这些测试通过。本试验不自动安装或刷机。
+1. **云构建门禁**：最终 .config 保留旧必需/推荐项及 ARM32 COMPAT，全部新增项为 y，WALT/RT_GROUP_SCHED 关闭，KSU/KPM/SUSFS 关闭；编译链接和 Image 配置 cmp 通过。保存并审查布局与 Module.symvers 的真实旧/新差异。ZIP 生成不代表启动或 vendor ABI 通过。
+2. **CPU quota**：另行授权的备用机上，在实际使用的 cgroup 层级（v1 cpu.cfs_quota_us / cpu.cfs_period_us，或已委派的 v2 cpu.max）建立独立测试组，仅移入测试进程。用固定 CPU 亲和性的忙循环，对照无配额与例如 50% 单核配额的 CPU 时间/墙钟比，观察 cpu.stat 节流计数增长；恢复 unlimited 并清理测试组。不能只验证文件存在，也不能给 Android 宿主/系统组写限额。
+3. **pids**：独立测试 cgroup 设置小的 pids.max，记录 pids.current；受控创建子进程到上限，确认 fork/clone 返回 EAGAIN 且 pids.events（若提供）增长，退出子进程后计数回落并可再次创建。包括线程计数行为，清理测试组；不在根/Android 系统组试验或制造 fork bomb。
+4. **原生 USER_NS**：正常 SELinux enforcing 和正常 sandbox 下，经实际 Droidspaces 路径创建 CLONE_NEWUSER，记录父子 /proc/<pid>/ns/user inode、uid_map/gid_map、setgroups 策略及容器内外 UID/GID、能力边界。合法映射成功、越权映射被拒绝；确认不是 proot/关闭 sandbox 回退。失败时区分 sysctl、映射授权、SELinux 与内核缺失，不以 permissive 替代验收。
+5. **NAT66**：先确认外侧有可用 IPv6，再用隔离 netns/veth 和独立测试规则链，经实际容器出口验证 ip6tables nat MASQUERADE 可添加、计数增长、conntrack、出站源地址转换及回包。测试 TCP/UDP、DNS 与必要 ICMPv6/PMTU，不仅菜单或 ping；仅清理测试对象，不 flush Android/netd 全局规则。区分上游 IPv6、转发/路由、用户态 backend、SELinux 与内核 NAT 故障。
+6. **整体回归/性能**：复测 PID/IPC namespace、mqueue 挂载收发、seccomp、32 位程序、启动及 Wi-Fi/移动数据/相机/音频等；相同环境比较旧包与候选的游戏帧时间、突发响应、频率/核心状态、温度和电耗。全绿不替代隔离/限额/网络实测，不关闭 sandbox/SELinux 绕过问题。无候选实机记录前不得称已验证可用；此文档/CI 不授权刷机或操作主力机。

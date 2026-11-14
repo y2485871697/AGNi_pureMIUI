@@ -1,4 +1,5 @@
-name: Experimental haydn Droidspaces HyperOS-NoKSU
+name: EXPERIMENTAL-Droidspaces-FULL-HyperOS-NoKSU-PELT
+run-name: EXPERIMENTAL-Droidspaces-FULL-HyperOS-NoKSU-PELT ${{ github.sha }}
 
 on:
   workflow_dispatch:
@@ -29,6 +30,13 @@ jobs:
           persist-credentials: false
           submodules: true # Pinned Kconfig dependency only; KSU is disabled before build.
 
+      - name: Label the exact FULL candidate (including failure diagnostics)
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'CANDIDATE_LABEL=EXPERIMENTAL-Droidspaces-FULL-HyperOS-NoKSU-PELT-%s\n' \
+            "${GITHUB_SHA:0:12}" >> "$GITHUB_ENV"
+
       - name: Install Ubuntu build prerequisites (not a kernel build)
         shell: bash
         run: |
@@ -44,7 +52,7 @@ jobs:
           printf '%s\n' "ImageOS=${ImageOS:-unknown}" "ImageVersion=${ImageVersion:-unknown}" \
             > "$AGNI_CI_ARTIFACTS/diagnostics/runner-image.txt"
 
-      - name: Build only haydn HyperOS NoKSU and package original AnyKernel
+      - name: Build haydn FULL non-WALT PELT NoKSU and verify real IKCONFIG
         shell: bash
         env:
           AGNI_CI_TOOLS: ${{ runner.temp }}/agni-haydn-tools
@@ -54,7 +62,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: EXPERIMENTAL-Droidspaces-haydn-HyperOS-NoKSU-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ env.CANDIDATE_LABEL || format('EXPERIMENTAL-Droidspaces-FULL-HyperOS-NoKSU-PELT-{0}', github.sha) }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts-haydn-ci/
           include-hidden-files: true
           if-no-files-found: warn

@@ -504,15 +504,6 @@ struct sched_entity {
 
 	struct sched_statistics		statistics;
 
-#ifdef CONFIG_FAIR_GROUP_SCHED
-	int				depth;
-	struct sched_entity		*parent;
-	/* rq on which this entity is (to be) queued: */
-	struct cfs_rq			*cfs_rq;
-	/* rq "owned" by this entity/group: */
-	struct cfs_rq			*my_q;
-#endif
-
 #ifdef CONFIG_SMP
 	/*
 	 * Per entity load average tracking.
@@ -523,10 +514,24 @@ struct sched_entity {
 	struct sched_avg		avg;
 #endif
 
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	/*
+	 * Reuse the four existing u64 slots, leaving avg and earlier fields
+	 * in place. On arm64 depth is an int plus four bytes of union padding;
+	 * the slot still has u64 size/alignment. Do not use that padding.
+	 */
+	ANDROID_KABI_USE(1, int depth);
+	ANDROID_KABI_USE(2, struct sched_entity *parent);
+	/* rq on which this entity is (to be) queued: */
+	ANDROID_KABI_USE(3, struct cfs_rq *cfs_rq);
+	/* rq "owned" by this entity/group: */
+	ANDROID_KABI_USE(4, struct cfs_rq *my_q);
+#else
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
 	ANDROID_KABI_RESERVE(3);
 	ANDROID_KABI_RESERVE(4);
+#endif
 };
 
 struct cpu_cycle_counter_cb {
@@ -549,15 +554,11 @@ static inline int  hh_vpm_grp_populate_info(u64 cap_id, int virq_num)
 }
 #endif /* CONFIG_QCOM_HYP_CORE_CTL */
 
-#ifdef CONFIG_SCHED_WALT
-extern void walt_task_dead(struct task_struct *p);
-extern int
-register_cpu_cycle_counter_cb(struct cpu_cycle_counter_cb *cb);
-extern void
-sched_update_cpu_freq_min_max(const cpumask_t *cpus, u32 fmin, u32 fmax);
-extern int set_task_boost(int boost, u64 period);
-extern void walt_update_cluster_topology(void);
-
+/*
+ * Keep the existing WALT task payload type and task_struct storage even when
+ * WALT is disabled. This preserves that exposed layout, not WALT execution.
+ * All WALT APIs and scheduler code remain conditional on CONFIG_SCHED_WALT.
+ */
 #define RAVG_HIST_SIZE_MAX  5
 #define NUM_BUSY_BUCKETS 10
 
@@ -631,6 +632,14 @@ struct walt_task_struct {
 	#endif
 };
 
+#ifdef CONFIG_SCHED_WALT
+extern void walt_task_dead(struct task_struct *p);
+extern int
+register_cpu_cycle_counter_cb(struct cpu_cycle_counter_cb *cb);
+extern void
+sched_update_cpu_freq_min_max(const cpumask_t *cpus, u32 fmin, u32 fmax);
+extern int set_task_boost(int boost, u64 period);
+extern void walt_update_cluster_topology(void);
 #else
 static inline void walt_task_dead(struct task_struct *p) { }
 
@@ -850,9 +859,8 @@ struct task_struct {
 	struct sched_entity		se;
 	struct sched_rt_entity		rt;
 
-#ifdef CONFIG_SCHED_WALT
+	/* Inert layout retention when CONFIG_SCHED_WALT=n; not a scheduler. */
 	struct walt_task_struct		wts;
-#endif
 
 #ifdef CONFIG_CGROUP_SCHED
 	struct task_group		*sched_task_group;

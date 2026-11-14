@@ -56,6 +56,8 @@ trap finish EXIT
 
 COMMIT=$(git rev-parse HEAD)
 [[ $COMMIT == "${GITHUB_SHA:?}" ]] || { echo 'Dispatched commit mismatch'; exit 1; }
+LABEL="EXPERIMENTAL-Droidspaces-FULL-HyperOS-NoKSU-PELT-${COMMIT:0:12}"
+printf 'CANDIDATE_LABEL=%s\n' "$LABEL" >> "${GITHUB_ENV:?}"
 git diff --exit-code HEAD --
 [[ -z $(git status --porcelain --untracked-files=no) ]] || exit 1
 [[ $(sed -n 's/^export AGNI_VERSION="\([^"]*\)"/\1/p' AGNi_version.sh) == v7.10 ]] || {
@@ -128,9 +130,17 @@ scripts/config --file "$OUT/.config" --disable KSU --disable KSU_NEXT --disable 
 make "${MAKE_ARGS[@]}" olddefconfig 2>&1 | tee -a "$DIAG/configure.log"
 check_config() {
   local symbol
-  for symbol in NAMESPACES PID_NS IPC_NS UTS_NS NET_NS SYSVIPC POSIX_MQUEUE \
-    DEVTMPFS NETFILTER_XT_MATCH_ADDRTYPE SECCOMP SECCOMP_FILTER CGROUPS \
-    COMPAT COMPAT_VDSO MODVERSIONS; do
+  for symbol in NAMESPACES PID_NS IPC_NS UTS_NS NET_NS USER_NS SYSVIPC \
+    SYSVIPC_SYSCTL POSIX_MQUEUE POSIX_MQUEUE_SYSCTL SYSCTL NET DEVTMPFS \
+    NETFILTER NETFILTER_ADVANCED NETFILTER_XTABLES NETFILTER_XT_MATCH_ADDRTYPE \
+    SECCOMP SECCOMP_FILTER CGROUPS CGROUP_SCHED FAIR_GROUP_SCHED CFS_BANDWIDTH \
+    CGROUP_PIDS CPUSETS CGROUP_CPUACCT MEMCG CGROUP_FREEZER \
+    IPV6 NF_CONNTRACK NF_NAT NF_NAT_MASQUERADE NETFILTER_XT_NAT \
+    NETFILTER_XT_TARGET_MASQUERADE IP6_NF_IPTABLES IP6_NF_NAT \
+    IP6_NF_TARGET_MASQUERADE IP_NF_IPTABLES IP_NF_NAT IP_NF_TARGET_MASQUERADE \
+    VETH BRIDGE TUN OVERLAY_FS COMPAT COMPAT_VDSO BINFMT_ELF BINFMT_SCRIPT \
+    UNIX PROC_FS SYSFS TMPFS \
+    IKCONFIG IKCONFIG_PROC MODVERSIONS; do
     grep -qx "CONFIG_${symbol}=y" "$OUT/.config" || {
       echo "Required effective CONFIG_${symbol}=y missing after olddefconfig"; return 1;
     }
@@ -139,12 +149,11 @@ check_config() {
   if grep -Eq '^CONFIG_(KSU[A-Za-z0-9_]*|KPM|SUSFS[A-Za-z0-9_]*)=[ym]$' "$OUT/.config"; then
     echo 'KernelSU, SUSFS or KPM configuration is enabled'; return 1
   fi
-  # Never alter baseline resource-controller choices. Only reject newly enabled limits.
-  for symbol in USER_NS CGROUP_PIDS CFS_BANDWIDTH; do
-    if grep -Eq "^CONFIG_${symbol}=[ym]$" "$OUT/.config" &&
-       ! grep -Eq "^CONFIG_${symbol}=[ym]$" arch/arm64/configs/agni_haydn_defconfig; then
-      echo "Unexpected newly enabled CONFIG_${symbol}"; return 1
-    fi
+  # FULL requires the existing non-WALT PELT/CFS path; no RT group scheduling.
+  for symbol in SCHED_WALT RT_GROUP_SCHED; do
+    grep -qx "# CONFIG_${symbol} is not set" "$OUT/.config" || {
+      echo "Required CONFIG_${symbol}=n missing after olddefconfig"; return 1;
+    }
   done
 }
 check_config
@@ -152,9 +161,11 @@ cp "$OUT/.config" "$ARTIFACTS/.config"
 cp arch/arm64/configs/agni_haydn_defconfig "$DIAG/input-agni_haydn_defconfig"
 {
   printf 'source_repository=%s\nsource_commit=%s\n' "${GITHUB_SERVER_URL:?}/${GITHUB_REPOSITORY:?}" "$COMMIT"
-  printf 'source_base=7dc006fa2217dab1b30ce0a615980f6c5013667f\n'
+  printf 'source_base=547a4f9de02f22921ba84674d8dc50ce62bd0582\n'
   printf 'run=%s/%s/actions/runs/%s\nattempt=%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "${GITHUB_RUN_ID:?}" "${GITHUB_RUN_ATTEMPT:?}"
-  printf 'variant=EXPERIMENTAL Droidspaces haydn AGNi v7.10 HyperOS-NoKSU\n'
+  printf 'variant=%s\ndevice=haydn\nversion=AGNi-v7.10\n' "$LABEL"
+  printf 'WARNING: FULL non-WALT candidate; not the previously device-tested minimal build.\n'
+  printf 'WARNING: PELT changes scheduling/boost/core_ctl paths; no performance or full vendor ABI guarantee.\n'
   printf 'targets=default (original haydn build), dtbs\n'
   printf 'make '; printf '%q ' "${MAKE_ARGS[@]}"; printf '\n'
   git show -s --format=fuller HEAD
@@ -178,6 +189,37 @@ cmp "$ARTIFACTS/.config" "$OUT/.config"
 git diff --exit-code HEAD --
 
 BOOT="$OUT/arch/arm64/boot"
+# Fail closed before any installer ZIP is created: /proc/config.gz must be honest.
+scripts/extract-ikconfig "$BOOT/Image" > "$ARTIFACTS/embedded.config"
+[[ -s $ARTIFACTS/embedded.config ]]
+if ! cmp "$OUT/.config" "$ARTIFACTS/embedded.config" > "$DIAG/ikconfig-compare.txt" 2>&1; then
+  echo 'Embedded IKCONFIG differs from the final real .config; refusing ZIP.'; exit 1
+fi
+printf 'PASS: Image IKCONFIG exactly matches final .config\n' >> "$DIAG/ikconfig-compare.txt"
+sha256sum "$OUT/.config" "$ARTIFACTS/embedded.config" >> "$ARTIFACTS/PROVENANCE.txt"
+
+# Optional source-layout evidence only: never enable debug options for this step.
+# Failure to decode DWARF is recorded, not misrepresented as an ABI check or build failure.
+{
+  if ! grep -qx 'CONFIG_DEBUG_INFO=y' "$OUT/.config"; then
+    echo 'SKIP: existing configuration has no CONFIG_DEBUG_INFO=y'
+  elif ! command -v pahole >/dev/null 2>&1; then
+    echo 'SKIP: pahole is unavailable'
+  elif [[ ! -s $OUT/vmlinux ]]; then
+    echo 'SKIP: vmlinux is unavailable'
+  else
+    pahole --version || echo 'WARNING: pahole --version failed; attempting layouts'
+    for type in sched_entity task_struct css_set cgroup task_group cfs_rq rq cred user_namespace nsproxy; do
+      if pahole -C "$type" "$OUT/vmlinux" > "$DIAG/layout-${type}.txt" 2>&1; then
+        printf 'EXPORTED: %s (not proof of old/vendor ABI equality)\n' "$type"
+      else
+        layout_status=$?
+        printf 'FAILED: %s, pahole exit=%s; see layout-%s.txt\n' "$type" "$layout_status" "$type"
+      fi
+    done
+  fi
+} > "$DIAG/layout-status.txt" 2>&1
+
 for file in Image dtb.img dtbo.img; do
   [[ -s $BOOT/$file ]] || { echo "Missing original haydn payload: $file"; exit 1; }
   cp "$BOOT/$file" "$ARTIFACTS/$file"
@@ -202,12 +244,16 @@ if find "$STAGE" -maxdepth 1 -type f \( -name 'Image*' -o -name 'dtb*' -o -name 
 fi
 cp "$ARTIFACTS/Image" "$ARTIFACTS/dtb.img" "$ARTIFACTS/dtbo.img" "$STAGE/"
 # Change the display label in the staged copy only; keep installer/root handling untouched.
-sed -i 's/^kernel.string=.*/kernel.string=EXPERIMENTAL AGNi v7.10 Droidspaces haydn HyperOS-NoKSU/' "$STAGE/anykernel.sh"
+sed -i "s/^kernel.string=.*/kernel.string=AGNi v7.10 haydn $LABEL/" "$STAGE/anykernel.sh"
 cp "$ARTIFACTS/PROVENANCE.txt" "$STAGE/PROVENANCE.txt"
 cp COPYING "$ARTIFACTS/COPYING.kernel"
 cp COPYING "$STAGE/COPYING.kernel"
-cat > "$ARTIFACTS/EXPERIMENTAL.txt" <<'WARNING'
-EXPERIMENTAL: AGNi v7.10 / haydn / Droidspaces / HyperOS-NoKSU
+printf '%s\n' "$LABEL / AGNi v7.10 / haydn" > "$ARTIFACTS/EXPERIMENTAL.txt"
+cat >> "$ARTIFACTS/EXPERIMENTAL.txt" <<'WARNING'
+FULL non-WALT/PELT candidate, NOT the previously device-tested minimal package.
+WALT boost/qc_vas/core_ctl/cpu-boost paths are not built. Gaming, burst response,
+frequency behavior, thermals and battery life may change; no lossless-performance promise.
+Cgroup/controller and scheduler structure changes do NOT preserve the full vendor ABI.
 Built for evaluation, NOT a claim of boot, stock-vendor ABI or Droidspaces compatibility.
 No phone has been connected, flashed or tested by this workflow. No Release is created.
 The original repository AnyKernel installer is retained; no Magisk installer or KernelSU
@@ -216,7 +262,7 @@ Any modules archive is DIAGNOSTIC ONLY and is not installed by this ZIP.
 Do not use on the primary phone. Review the source, logs, config and recovery plan first.
 WARNING
 cp "$ARTIFACTS/EXPERIMENTAL.txt" "$STAGE/EXPERIMENTAL.txt"
-ZIP="AGNi_kernel-haydn-v7.10-EXPERIMENTAL-Droidspaces-HyperOS-NoKSU-${COMMIT:0:12}.zip"
+ZIP="AGNi_kernel-haydn-v7.10-${LABEL}.zip"
 # Do not execute any recovery script or the ARM magiskboot utility on the host.
 (cd "$STAGE" && zip -q -r "$ARTIFACTS/$ZIP" .)
 unzip -t "$ARTIFACTS/$ZIP" > "$DIAG/zip-test.txt"

@@ -1,4 +1,4 @@
-# Experimental haydn / Droidspaces CI (AGNi v7.10)
+# EXPERIMENTAL-Droidspaces-FULL-HyperOS-NoKSU-PELT CI (haydn / AGNi v7.10)
 
 This is a **cloud-build experiment**, not a device installation procedure. It targets only
 haydn, HyperOS and **NoKSU**, based on AGNi v7.10. It does not build AOSP/90Hz variants,
@@ -6,10 +6,19 @@ install Magisk, publish a Release, connect to a device, or flash anything. A suc
 build is not evidence of bootability, stock-HyperOS vendor-module ABI compatibility or
 Droidspaces runtime compatibility.
 
+This candidate starts from `547a4f9de02f22921ba84674d8dc50ce62bd0582` and enables
+CPU quota, pids, native USER_NS and IPv6 NAT. CFS_BANDWIDTH really depends on
+FAIR_GROUP_SCHED and !SCHED_WALT in this tree: WALT is disabled, not patched around.
+The previously device-tested minimal WALT ZIP remains separate and must not be
+overwritten or treated as evidence that this FULL candidate is device-tested.
+FULL describes requested feature coverage, not a performance, all-green or vendor-ABI
+promise. Do not change CPU frequency/voltage/thermal tables, Android userspace or host
+cgroup limits to make the candidate pass.
+
 ## Run exactly the reviewed revision
 
-In the fork's GitHub Actions page, choose **Experimental haydn Droidspaces
-HyperOS-NoKSU**, then **Run workflow**, selecting the reviewed
+In the fork's GitHub Actions page, choose
+**EXPERIMENTAL-Droidspaces-FULL-HyperOS-NoKSU-PELT**, then **Run workflow**, selecting the reviewed
 `droidspaces-haydn-v7.10` revision. There are no variant inputs. The workflow only has
 `workflow_dispatch`; pushes and pull requests do not start a build. One dispatched job
 builds one kernel variant. Do not dispatch more than once without reviewing the first
@@ -20,11 +29,14 @@ Entry point: `.github/workflows/build-haydn-droidspaces.yml` invokes
 environments. Do not run a local kernel compilation. The hosted job calls:
 
 1. `make O=out-haydn-ci ... agni_haydn_defconfig`;
-2. `scripts/config --file out-haydn-ci/.config --disable KSU --disable KSU_NEXT`;
+2. `scripts/config --file out-haydn-ci/.config --disable KSU --disable KSU_NEXT --disable KSU_SUSFS --disable KPM`;
 3. `make O=out-haydn-ci ... olddefconfig` and effective-config validation;
 4. the original author's default `make -j$(nproc) O=out-haydn-ci ...` target;
 5. `make -j$(nproc) O=out-haydn-ci ... dtbs` (ensures device trees, not another variant);
-6. packaging the resulting `Image`, `dtb.img` and `dtbo.img` using **the source tree's
+6. extracting IKCONFIG from `Image` with this tree's `scripts/extract-ikconfig` and
+   comparing it byte-for-byte with final `.config` (failure means no installer ZIP);
+7. optionally exporting key layouts using existing debug information and pahole;
+8. packaging the resulting `Image`, `dtb.img` and `dtbo.img` using **the source tree's
    `anykernel3`**, without executing its recovery scripts on the build host.
 
 The full command-line tool overrides are recorded in `PROVENANCE.txt`. We deliberately
@@ -74,18 +86,28 @@ The effective `.config`, **after `olddefconfig`**, must have all of
 `CONFIG_NETFILTER_XT_MATCH_ADDRTYPE`, `CONFIG_SECCOMP`, `CONFIG_SECCOMP_FILTER`,
 `CONFIG_CGROUPS` and `CONFIG_MODVERSIONS` equal to `y`. All enabled `CONFIG_KSU*`, `CONFIG_SUSFS*` and `CONFIG_KPM` settings are rejected.
 `CONFIG_COMPAT` and `CONFIG_COMPAT_VDSO` must remain enabled.
-The script does not turn on optional container/resource features and does not modify
-baseline resource-controller choices. Newly enabled `CGROUP_PIDS` or `CFS_BANDWIDTH`
-relative to the checked-in haydn defconfig are rejected. Source configs must remain
-unchanged during the build.
+The FULL effective configuration additionally requires `USER_NS`, `FAIR_GROUP_SCHED`,
+`CFS_BANDWIDTH`, `CGROUP_PIDS`, `IP6_NF_NAT` and `IP6_NF_TARGET_MASQUERADE` equal to `y`.
+`SCHED_WALT` and `RT_GROUP_SCHED` must be disabled. Existing namespace/IPC/seccomp,
+filesystem, CPUSETS/MEMCG/CPUACCT/FREEZER, ARM32 COMPAT and network dependencies are
+asserted too, including `IPV6`, `IP6_NF_IPTABLES`, `NF_CONNTRACK`, `NF_NAT`,
+`NF_NAT_MASQUERADE`, `NETFILTER_XT_NAT` and `NETFILTER_XT_TARGET_MASQUERADE`.
+There are no nonexistent `NF_NAT_IPV6`/`NF_CONNTRACK_IPV6` settings. Source configs must
+remain unchanged during the build. Enabling controllers does not set host quotas.
 
 The baseline's custom module policies are **not silently corrected**. Provenance records
 `CONFIG_MODVERSIONS`, `CONFIG_MODULE_FORCE_LOAD`,
 `CONFIG_MODULE_FAKE_LOAD_SUCCESS_WITHOUT_LOADING` and related signing/unloading settings
 from the effective config. Forced loads and an `insmod` success return (especially the
 fake-success policy) do **not** establish stock-vendor ABI compatibility. `Module.symvers`
-is diagnostic evidence, not a substitute for that verification. POSIX-mqueue ABI handling
-is a separate source/configuration change, not performed by this build script.
+is diagnostic evidence, not a substitute for that verification. The first-version
+POSIX-mqueue slot adaptation is retained. sched_entity consumes its four real existing
+KABI slots for group fields without moving avg; task_struct retains its real wts payload
+without enabling WALT code. But CGROUP_PIDS grows css_set/cgroup arrays with no available
+reserve, and task_group/cfs_rq/rq change too: full old-vendor ABI is NOT promised.
+USER_NS's existing fields do not make its new reference/permission semantics identical
+to the old stubs. MODVERSIONS stays enabled; no fake reserve, CRC trick or sidecar is added.
+See `Documentation/haydn-droidspaces-kernel.md` for implementation boundaries.
 
 The bundled AnyKernel has `do.modules=0`; CI preserves that policy and does not install
 replacement vendor modules. If the default target emits `.ko` files, they are provided
@@ -96,11 +118,15 @@ guarantee that an untested installation will preserve root or boot successfully.
 ## Artifacts and failure behavior
 
 The Actions artifact is named
-`EXPERIMENTAL-Droidspaces-haydn-HyperOS-NoKSU-<run>-<attempt>` (14-day retention).
+`EXPERIMENTAL-Droidspaces-FULL-HyperOS-NoKSU-PELT-<commit12>-<run>-<attempt>`
+(14-day retention). AnyKernel's staged display label, ZIP, warning and PROVENANCE
+share the same candidate label with commit12. The static workflow name identifies FULL/PELT;
+the run display includes the complete commit SHA. Early pre-checkout failures may use the
+full SHA fallback artifact label rather than a short SHA.
 A successful build includes:
 
-* `AGNi_kernel-haydn-v7.10-EXPERIMENTAL-Droidspaces-HyperOS-NoKSU-<commit12>.zip`;
-* separate nonempty `Image`, `dtb.img`, `dtbo.img` and the effective `.config`;
+* `AGNi_kernel-haydn-v7.10-EXPERIMENTAL-Droidspaces-FULL-HyperOS-NoKSU-PELT-<commit12>.zip`;
+* separate nonempty `Image`, `dtb.img`, `dtbo.img`, effective `.config` and extracted `embedded.config`;
 * `SHA256SUMS`, `PROVENANCE.txt`, original kernel license and experimental warning;
 * diagnostic `Module.symvers`, `System.map`, module lists, build/config/toolchain logs,
   compiler manifests/checksums, host package versions, and ZIP-content/integrity checks;
@@ -125,12 +151,39 @@ The shared make arguments explicitly set `LLVM=1`,
 `CROSS_COMPILE_COMPAT=arm-linux-gnueabi-`, `CC_COMPAT` with the ARM target,
 and `LD_COMPAT` to LLD; no second compiler download or disabling COMPAT is needed.
 
-The upstream `kernel/Makefile` embeds `arch/arm64/configs/stock_defconfig`
-as IKCONFIG instead of the generated build configuration. Thus `/proc/config.gz`
-or `extract-ikconfig Image` is not evidence of the actual enabled features.
-This workflow preserves upstream embedding behavior and archives the actual
-post-olddefconfig output `.config` with its SHA-256, plus the input defconfig.
-Runtime namespace creation still needs verification after a user-controlled flash.
+The previous `kernel/Makefile` embedded `arch/arm64/configs/stock_defconfig`, not the
+real build configuration. This candidate fixes the dependency to `$(KCONFIG_CONFIG)`;
+stock_defconfig is not edited. The script archives the real final `.config`, the input
+defconfig and `embedded.config` extracted from the built Image, with hashes and a
+mandatory `cmp`. Extraction failure, empty output or mismatch fails before packaging;
+the failure trap removes any ZIP/success checksum. The old Image's embedded configuration
+must not be used as the old baseline: use its archived real `.config` instead.
+
+Existing `CONFIG_DEBUG_INFO=y`/DWARF information can supply optional layout evidence.
+When pahole and vmlinux are available, diagnostics export sched_entity, task_struct,
+css_set, cgroup, task_group, cfs_rq, rq, cred, user_namespace and nsproxy. Missing
+prerequisites or per-type decode failures are recorded in layout-status/layout files;
+they are not mislabeled as ABI passes, nor used to hide a kernel build failure. No new
+runtime debug configuration, baseline download permission or vmlinux upload is added.
+Review must compare actual old/new Module.symvers exports/CRCs and relevant module imports.
+
+## Runtime acceptance is separate from green configuration checks
+
+Disabling WALT stops building its boost/qc_vas/core_ctl/cpu-boost paths and selects this
+tree's existing non-WALT/PELT scheduling path. Gaming, burst response, frequency feedback,
+thermals and battery behavior may change. No unchanged-performance claim is made.
+Keep the tested old ZIP and compare only under the same device/workload conditions.
+
+On a separately authorized spare device, retain SELinux enforcing and normal sandboxing.
+Verify actual CPU quota throttling and recovery in a dedicated test cgroup (not the
+Android host group), controlled pids-limit EAGAIN/count recovery, native USER_NS
+inode/UID/GID-map/capability isolation (no proot or disabled-sandbox fallback), and real
+NAT66 source translation/return traffic with rule counters/conntrack and an IPv6 upstream.
+Do not flush Android/netd rules or change host limits. Restore only test objects.
+Recheck boot, ARM32, namespaces/mqueue/seccomp and hardware functions; compare frame times,
+response, temperatures and energy use rather than claiming lossless performance.
+Detailed bounded acceptance criteria are in `Documentation/haydn-droidspaces-kernel.md`.
+These tests have not been executed by this implementation or workflow.
 
 ## Pinned Kconfig dependency
 
