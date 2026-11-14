@@ -19,7 +19,6 @@ jobs:
       CI: 'true'
       AGNI_CI_OUT: ${{ github.workspace }}/out-haydn-ci
       AGNI_CI_ARTIFACTS: ${{ github.workspace }}/artifacts-haydn-ci
-      AGNI_CI_TOOLS: ${{ runner.temp }}/agni-haydn-tools
       KBUILD_BUILD_USER: y2485871697
       KBUILD_BUILD_HOST: github-actions
     steps:
@@ -47,6 +46,8 @@ jobs:
 
       - name: Build only haydn HyperOS NoKSU and package original AnyKernel
         shell: bash
+        env:
+          AGNI_CI_TOOLS: ${{ runner.temp }}/agni-haydn-tools
         run: bash scripts/ci-build-haydn.sh
 
       - name: Upload experimental artifacts and bounded failure diagnostics
