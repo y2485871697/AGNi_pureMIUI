@@ -500,10 +500,15 @@ module_param_cb(trace, &cb_trace_ops, NULL, 0444);
 
 static inline bool clus_isolated(struct cpufreq_policy *pol)
 {
+#ifdef CONFIG_SCHED_WALT
 	cpumask_t xor;
 
 	cpumask_andnot(&xor, pol->related_cpus, cpu_isolated_mask);
 	return !cpumask_weight(&xor);
+#else
+	/* CPU isolation via cpu_isolated_mask is only available with WALT. */
+	return false;
+#endif
 }
 
 unsigned int cb_cap(struct cpufreq_policy *pol, unsigned int freq)
