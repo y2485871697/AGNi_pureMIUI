@@ -1,0 +1,61 @@
+name: Experimental haydn Droidspaces HyperOS-NoKSU
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: haydn-droidspaces-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Never run on a phone or self-hosted runner. No release/push/flash jobs.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      CI: 'true'
+      AGNI_CI_OUT: ${{ github.workspace }}/out-haydn-ci
+      AGNI_CI_ARTIFACTS: ${{ github.workspace }}/artifacts-haydn-ci
+      AGNI_CI_TOOLS: ${{ runner.temp }}/agni-haydn-tools
+      KBUILD_BUILD_USER: y2485871697
+      KBUILD_BUILD_HOST: github-actions
+    steps:
+      - name: Checkout exact dispatched revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: true # Pinned Kconfig dependency only; KSU is disabled before build.
+
+      - name: Install Ubuntu build prerequisites (not a kernel build)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$AGNI_CI_ARTIFACTS/diagnostics"
+          exec > >(tee "$AGNI_CI_ARTIFACTS/diagnostics/host-dependencies.log") 2>&1
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bc bison build-essential ca-certificates cpio device-tree-compiler \
+            dwarves flex git kmod libelf-dev libncurses-dev libssl-dev \
+            libtinfo5 lz4 lzop python3 rsync unzip xz-utils zip zstd
+          dpkg-query -W > "$AGNI_CI_ARTIFACTS/diagnostics/host-packages.tsv"
+          printf '%s\n' "ImageOS=${ImageOS:-unknown}" "ImageVersion=${ImageVersion:-unknown}" \
+            > "$AGNI_CI_ARTIFACTS/diagnostics/runner-image.txt"
+
+      - name: Build only haydn HyperOS NoKSU and package original AnyKernel
+        shell: bash
+        run: bash scripts/ci-build-haydn.sh
+
+      - name: Upload experimental artifacts and bounded failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: EXPERIMENTAL-Droidspaces-haydn-HyperOS-NoKSU-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts-haydn-ci/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6

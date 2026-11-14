@@ -1,4 +1,4 @@
-# haydn / AGNi v7.10：Droidspaces PID / IPC 最小配置试验
+# haydn / AGNi v7.10：Droidspaces 最小必需配置与 KABI 适配
 
 ## 范围与入口
 
@@ -15,6 +15,8 @@
 CONFIG_PID_NS=y
 CONFIG_POSIX_MQUEUE=y
 CONFIG_POSIX_MQUEUE_SYSCTL=y
+CONFIG_DEVTMPFS=y
+CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
 ```
 
 `init/Kconfig` 已提供所需实现和依赖，无需修改：
@@ -23,6 +25,7 @@ CONFIG_POSIX_MQUEUE_SYSCTL=y
 - `POSIX_MQUEUE` 依赖 `NET`，原本已为 `y`。
 - `POSIX_MQUEUE_SYSCTL` 是隐藏的 bool，在 `POSIX_MQUEUE && SYSCTL` 下默认 `y`；`SYSCTL` 原本已为 `y`。此处显式记录其自然生成的配套设置，不另加功能。
 - `SYSVIPC=y`、`SYSVIPC_SYSCTL=y`、`IPC_NS=y` 原样保留，不套 SYSVIPC 补丁。
+- 按 Droidspaces v7.2.0 的 GKI 5.4+ 最小清单补开 `DEVTMPFS` 与 `NETFILTER_XT_MATCH_ADDRTYPE`，分别提供设备文件系统与 addrtype 匹配支持。
 - 不启用 `USER_NS`、`CGROUP_PIDS`、`FAIR_GROUP_SCHED` / `CFS_BANDWIDTH` 等可选功能，也不增加替代隔离机制。
 
 `include/linux/sched/user.h`：将受 `CONFIG_POSIX_MQUEUE` 控制的 `mq_bytes` 从结构中部移动到已有的 `ANDROID_KABI_RESERVE(1)` 槽，用 `ANDROID_KABI_USE(1, unsigned long mq_bytes)` 表达；关闭 MQUEUE 时仍保留槽 1，槽 2 不变。
@@ -87,7 +90,7 @@ CONFIG_MODULE_TURNOFF_SIG_CHECKS=y
 
 GitHub 实际构建/后续审核至少应分别确认：
 
-1. 最终 `.config` 中上述三个新增选项有效，`SYSVIPC`、`IPC_NS`、`NAMESPACES`、`NET`、`SYSCTL`、`MODVERSIONS` 仍为 `y`；可选的 USER_NS/CGROUP_PIDS 等没有被间接打开。
+1. 最终 `.config` 中上述新增选项有效，`SYSVIPC`、`IPC_NS`、`NAMESPACES`、`NET`、`SYSCTL`、`MODVERSIONS` 仍为 `y`；可选的 USER_NS/CGROUP_PIDS 等没有被间接打开。
 2. 编译、链接通过且 KABI 尺寸/对齐断言通过。保存构建日志、最终配置和 `Module.symvers`，不要仅凭 ZIP 生成判断 ABI。
 3. 如能取得同树未改配置的构建产物及实际 stockvendor 模块，比较受影响结构布局、导出符号 CRC、vermagic、模块导入项；单个 `user_struct` 的兼容处理不能替代全量比较。
 4. 运行时的 PID/IPC namespace 创建、mqueue 挂载及收发、SELinux/权限策略、Android 启动和硬件功能均未验证。CI 编译成功仍不代表这些测试通过。本试验不自动安装或刷机。
